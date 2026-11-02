@@ -12,7 +12,8 @@ const STORAGE_KEYS = {
 
 // Default Settings
 const DEFAULT_SETTINGS = {
-  baseUrl: "http://localhost:11434",
+  baseUrl: "http://192.168.0.13:11434",
+  models: ["gpt-oss-8k:latest", "gpt-oss:20b"],
   systemPrompt: "You are a concise, helpful local AI assistant. Keep responses clear and structured.",
   temperature: 0.8,
   profile: "",
@@ -274,64 +275,43 @@ async function readNdjson(response, onObject) {
   }
 }
 
-// Model manager (Settings): lists server models with remove buttons, and downloads new ones
+// Model list (Settings): model names the user saved. They stay in the dropdown even when the server is offline.
 function renderModelList() {
   el.modelList.innerHTML = "";
-  if (state.availableModels.length === 0) {
-    el.modelList.innerHTML = `<li class="model-empty">No models on the server yet.</li>`;
+  if (state.settings.models.length === 0) {
+    el.modelList.innerHTML = `<li class="model-empty">No models added yet.</li>`;
     return;
   }
-  state.availableModels.forEach(name => {
+  state.settings.models.forEach(name => {
     const li = document.createElement("li");
     li.innerHTML = `
       <span>${escapeHtml(name)}</span>
-      <button type="button" class="session-delete" title="Remove from server" aria-label="Remove ${escapeHtml(name)}">&times;</button>
+      <button type="button" class="session-delete" title="Remove from list" aria-label="Remove ${escapeHtml(name)}">&times;</button>
     `;
-    li.querySelector("button").addEventListener("click", () => deleteModel(name));
+    li.querySelector("button").addEventListener("click", () => removeModel(name));
     el.modelList.appendChild(li);
   });
 }
 
-async function deleteModel(name) {
-  if (!confirm(`Remove "${name}" from the server?\n\nThis deletes it from the Ollama machine for everyone who uses it. You can download it again later.`)) return;
-  try {
-    const res = await fetch(`${state.settings.baseUrl}/api/delete`, {
-      method: "DELETE",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ model: name })
-    });
-    if (!res.ok) throw new Error(`HTTP ${res.status} ${await res.text()}`);
-    el.pullStatus.textContent = `Removed ${name}.`;
-  } catch (err) {
-    el.pullStatus.textContent = `Couldn't remove ${name}: ${err.message}`;
-  }
+async function storeSettings() {
+  await chrome.storage.local.set({ [STORAGE_KEYS.SETTINGS]: state.settings });
+}
+
+async function addModel() {
+  const name = el.pullModelInput.value.trim();
+  if (!name) return;
+  if (!state.settings.models.includes(name)) state.settings.models.push(name);
+  el.pullModelInput.value = "";
+  el.pullStatus.textContent = `Added ${name}.`;
+  await storeSettings();
   await refreshModels();
 }
 
-async function pullModel() {
-  const name = el.pullModelInput.value.trim();
-  if (!name) return;
-  el.pullModelBtn.disabled = true;
-  el.pullStatus.textContent = `Starting download of ${name}…`;
-  try {
-    const res = await fetch(`${state.settings.baseUrl}/api/pull`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ model: name, stream: true })
-    });
-    if (!res.ok) throw new Error(`HTTP ${res.status} ${await res.text()}`);
-    await readNdjson(res, (p) => {
-      const pct = p.total ? ` ${Math.floor((p.completed || 0) / p.total * 100)}%` : "";
-      el.pullStatus.textContent = `${name}: ${p.status}${pct}`;
-    });
-    el.pullStatus.textContent = `Downloaded ${name}. It's now in the model list.`;
-    el.pullModelInput.value = "";
-  } catch (err) {
-    el.pullStatus.textContent = `Couldn't download ${name}: ${err.message}`;
-  } finally {
-    await refreshModels();
-    el.pullModelBtn.disabled = false;
-  }
+async function removeModel(name) {
+  state.settings.models = state.settings.models.filter(m => m !== name);
+  el.pullStatus.textContent = `Removed ${name} from the list.`;
+  await storeSettings();
+  await refreshModels();
 }
 
 // Theme: "system" follows the OS live; "light"/"dark" override it
@@ -349,43 +329,38 @@ async function refreshModels() {
   el.statusBadge.className = "status-badge";
   el.modelSelect.innerHTML = `<option value="">Checking models...</option>`;
 
+  let serverModels = [];
   try {
     const baseUrl = state.settings.baseUrl;
     const res = await fetch(`${baseUrl}/api/tags`, { method: "GET" });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = await res.json();
-    state.availableModels = (data.models || []).map(m => m.name);
-
-    if (state.availableModels.length === 0) {
-      el.modelSelect.innerHTML = `<option value="">No models on server</option>`;
-      el.statusBadge.textContent = "No Models";
-      el.statusBadge.className = "status-badge offline";
-      return;
-    }
-
-    el.modelSelect.innerHTML = "";
-    state.availableModels.forEach(m => {
-      const opt = document.createElement("option");
-      opt.value = m;
-      opt.textContent = m;
-      el.modelSelect.appendChild(opt);
-    });
-
-    if (!state.selectedModel || !state.availableModels.includes(state.selectedModel)) {
-      state.selectedModel = state.availableModels[0];
-    }
-    el.modelSelect.value = state.selectedModel;
+    serverModels = (data.models || []).map(m => m.name);
     el.statusBadge.textContent = "Connected";
     el.statusBadge.className = "status-badge online";
   } catch (err) {
     console.warn("Failed to reach Ollama:", err);
     el.statusBadge.textContent = "Offline";
     el.statusBadge.className = "status-badge offline";
-    el.modelSelect.innerHTML = `<option value="">Server offline (${err.message})</option>`;
-    state.availableModels = [];
-  } finally {
-    renderModelList();
   }
+
+  // Saved names first, then anything else the server has
+  state.availableModels = [...new Set([...state.settings.models, ...serverModels])];
+  el.modelSelect.innerHTML = "";
+  if (state.availableModels.length === 0) {
+    el.modelSelect.innerHTML = `<option value="">No models: add one in Settings</option>`;
+  }
+  state.availableModels.forEach(m => {
+    const opt = document.createElement("option");
+    opt.value = m;
+    opt.textContent = m;
+    el.modelSelect.appendChild(opt);
+  });
+  if (!state.selectedModel || !state.availableModels.includes(state.selectedModel)) {
+    state.selectedModel = state.availableModels[0] || "";
+  }
+  el.modelSelect.value = state.selectedModel;
+  renderModelList();
 }
 
 // Context Miner Engine: Discovers facts and user intentions across previous turns
@@ -895,9 +870,9 @@ function setupEventListeners() {
     el.settingsModal.classList.remove("hidden");
   });
   el.saveSettingsBtn.addEventListener("click", saveSettings);
-  el.pullModelBtn.addEventListener("click", pullModel);
+  el.pullModelBtn.addEventListener("click", addModel);
   el.pullModelInput.addEventListener("keydown", (e) => {
-    if (e.key === "Enter") pullModel();
+    if (e.key === "Enter") addModel();
   });
 
   el.exportContextBtn.addEventListener("click", openContextModal);

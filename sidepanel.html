@@ -113,7 +113,7 @@
         <div class="modal-body">
           <label>
             <span>Ollama / Local LLM Base URL</span>
-            <input type="text" id="settingBaseUrl" placeholder="http://localhost:11434" value="http://localhost:11434">
+            <input type="text" id="settingBaseUrl" placeholder="http://192.168.0.13:11434" value="http://192.168.0.13:11434">
             <small>Use <code>http://localhost:11434</code> for Ollama on this computer, or the server's address on your network, e.g. <code>http://192.168.1.50:11434</code>.</small>
           </label>
 
@@ -171,13 +171,13 @@ Only include facts you're confident about. Leave out passwords, API keys and oth
           </label>
 
           <div class="models-manager">
-            <span>Models on Server</span>
+            <span>Models</span>
             <ul id="modelList" class="model-list"></ul>
             <div class="model-add">
-              <input type="text" id="pullModelInput" placeholder="e.g. llama3.2 or qwen2.5:7b" aria-label="Model to download">
-              <button type="button" id="pullModelBtn" class="btn primary-btn">Download</button>
+              <input type="text" id="pullModelInput" placeholder="e.g. llama3.2 or qwen2.5:7b" aria-label="Model name to add">
+              <button type="button" id="pullModelBtn" class="btn primary-btn">Add</button>
             </div>
-            <small id="pullStatus" aria-live="polite">Find model names at ollama.com/library. Downloads run on the server and can be several GB.</small>
+            <small id="pullStatus" aria-live="polite">Add the exact model name from your server. Models the server reports are also shown in the dropdown.</small>
           </div>
         </div>
         <div class="modal-footer">
