@@ -14,14 +14,27 @@ const STORAGE_KEYS = {
 const DEFAULT_SETTINGS = {
   baseUrl: "http://localhost:11434",
   systemPrompt: "You are a concise, helpful local AI assistant. Keep responses clear and structured.",
+  temperature: 0.8,
   profile: "",
   theme: "light",
   contextMiner: true,
   maxHistory: 20
 };
 
+// ~4k tokens: half of the 8192 num_ctx, leaving room for history and the reply
+const PAGE_CHAR_LIMIT = 16000;
+
+// Right-click menu actions from background.js
+const ASK_PROMPTS = {
+  explain: "Explain this:",
+  translate: "Translate this to English:",
+  fix: "Fix the grammar and spelling. Reply with only the corrected text:",
+  summarize: "Summarize this:"
+};
+
 // Global Extension State
 let state = {
+  page: null, // tab text attached to the next message: { title, url, text, total }
   settings: { ...DEFAULT_SETTINGS },
   sessions: [],
   currentSessionId: null,
@@ -57,6 +70,8 @@ const el = {
   settingsModal: document.getElementById("settingsModal"),
   settingBaseUrl: document.getElementById("settingBaseUrl"),
   settingSystemPrompt: document.getElementById("settingSystemPrompt"),
+  settingTemperature: document.getElementById("settingTemperature"),
+  temperatureValue: document.getElementById("temperatureValue"),
   settingProfile: document.getElementById("settingProfile"),
   settingTheme: document.getElementById("settingTheme"),
   modelList: document.getElementById("modelList"),
@@ -75,7 +90,11 @@ const el = {
   rawContextDisplay: document.getElementById("rawContextDisplay"),
   downloadJsonBtn: document.getElementById("downloadJsonBtn"),
   downloadMdBtn: document.getElementById("downloadMdBtn"),
-  copyContextBtn: document.getElementById("copyContextBtn")
+  copyContextBtn: document.getElementById("copyContextBtn"),
+  pageBtn: document.getElementById("pageBtn"),
+  pageChip: document.getElementById("pageChip"),
+  pageChipText: document.getElementById("pageChipText"),
+  removePageBtn: document.getElementById("removePageBtn")
 };
 
 // Initialize
@@ -85,7 +104,53 @@ document.addEventListener("DOMContentLoaded", async () => {
   setupEventListeners();
   await refreshModels();
   renderCurrentSession();
+  chrome.storage.session.onChanged.addListener((changes) => {
+    if (changes.pendingAsk?.newValue) takePendingAsk();
+  });
+  takePendingAsk(); // a right-click that opened this panel
 });
+
+// Send text the user right-clicked in a page (queued by background.js) if it was meant for this window
+async function takePendingAsk() {
+  const { pendingAsk } = await chrome.storage.session.get("pendingAsk");
+  if (!pendingAsk || pendingAsk.windowId !== (await chrome.windows.getCurrent()).id) return;
+  await chrome.storage.session.remove("pendingAsk");
+  el.promptInput.value = `${ASK_PROMPTS[pendingAsk.action] || ""}\n\n${pendingAsk.text}`.trim();
+  handleSendMessage(); // no-op while a reply is streaming; the text stays in the box
+}
+
+// Read the active tab's visible text and attach it to the next message
+async function attachPage() {
+  try {
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    const [{ result }] = await chrome.scripting.executeScript({ target: { tabId: tab.id }, func: () => document.body?.innerText || "" });
+    const text = result.replace(/\n{3,}/g, "\n\n").trim();
+    if (!text) throw new Error("The page has no text.");
+    state.page = { title: tab.title || tab.url, url: tab.url, text: text.slice(0, PAGE_CHAR_LIMIT), total: text.length };
+  } catch (err) {
+    alert(`Couldn't read this tab. Chrome pages, the Web Store and PDFs can't be read.\n\n${err.message}`);
+  }
+  renderPageChip();
+}
+
+function renderPageChip() {
+  const p = state.page;
+  el.pageChip.classList.toggle("hidden", !p);
+  if (p) {
+    const size = p.text.length < p.total
+      ? `first ${Math.round(p.text.length / p.total * 100)}% (${p.text.length.toLocaleString()} of ${p.total.toLocaleString()} chars)`
+      : `${p.total.toLocaleString()} chars`;
+    el.pageChipText.textContent = `📄 ${p.title} · ${size}`;
+    el.pageChipText.title = p.url;
+  }
+  updateContextStats();
+}
+
+// What the model sees for a user message that has a page attached
+function withPage(m) {
+  if (!m.page) return m.content;
+  return `[Web page: ${m.page.title} (${m.page.url})]\n${m.page.text}\n[End of web page]\n\n${m.content}`;
+}
 
 // Load Settings
 async function loadSettings() {
@@ -103,6 +168,7 @@ async function loadSettings() {
 async function saveSettings() {
   state.settings.baseUrl = el.settingBaseUrl.value.trim().replace(/\/+$/, "").replace(/\/api$/, "");
   state.settings.systemPrompt = el.settingSystemPrompt.value.trim();
+  state.settings.temperature = parseFloat(el.settingTemperature.value) || 0.8;
   state.settings.profile = el.settingProfile.value.trim();
   state.settings.theme = el.settingTheme.value;
   applyTheme();
@@ -122,6 +188,8 @@ async function saveSettings() {
 function syncSettingsUI() {
   el.settingBaseUrl.value = state.settings.baseUrl;
   el.settingSystemPrompt.value = state.settings.systemPrompt;
+  el.settingTemperature.value = state.settings.temperature;
+  el.temperatureValue.textContent = state.settings.temperature;
   el.settingProfile.value = state.settings.profile;
   el.settingTheme.value = state.settings.theme;
   el.settingContextMiner.checked = state.settings.contextMiner;
@@ -380,31 +448,33 @@ function buildChatPayload(session) {
   for (const m of recentHistory) {
     // Skip the in-flight assistant placeholder and failed replies
     if (!m.content || m.error) continue;
-    messagesToSend.push({ role: m.role, content: m.content });
+    messagesToSend.push({ role: m.role, content: withPage(m) });
   }
 
   return messagesToSend;
 }
 
+function titleFromPrompt(text) {
+  return text.slice(0, 30) + (text.length > 30 ? "..." : "");
+}
+
 // Chat Send & Live Streaming
 async function handleSendMessage(e) {
   if (e) e.preventDefault();
-  const prompt = el.promptInput.value.trim();
+  const prompt = el.promptInput.value.trim() || (state.page ? "Summarize this page." : "");
   if (!prompt || state.isStreaming) return;
 
   const session = getCurrentSession();
-  const model = el.modelSelect.value || state.selectedModel;
-
-  if (!model) {
-    alert("Please ensure your local LLM server is reachable and a model is chosen.");
-    return;
-  }
-
   const userMessage = { role: "user", content: prompt, timestamp: new Date().toISOString() };
+  if (state.page) {
+    userMessage.page = state.page; // stays in history, so follow-up questions still see it
+    state.page = null;
+    renderPageChip();
+  }
   session.messages.push(userMessage);
 
   if (session.messages.length === 1) {
-    session.title = prompt.slice(0, 30) + (prompt.length > 30 ? "..." : "");
+    session.title = titleFromPrompt(prompt);
   }
 
   mineSessionContext(session);
@@ -413,6 +483,20 @@ async function handleSendMessage(e) {
   el.promptInput.style.height = "auto";
   renderMessages();
 
+  await generateReply(session);
+}
+
+// Streams a new assistant reply from the session's current history. Shared by a normal send and
+// by Regenerate/Edit, which first truncate the history to the point they want to redo from.
+async function generateReply(session) {
+  const model = el.modelSelect.value || state.selectedModel;
+  if (!model) {
+    alert("Please ensure your local LLM server is reachable and a model is chosen.");
+    return;
+  }
+
+  // The message this reply answers; marked .error on failure so it's excluded from future context
+  const precedingMessage = session.messages[session.messages.length - 1];
   const assistantMsgObj = { role: "assistant", content: "", model, timestamp: new Date().toISOString() };
   session.messages.push(assistantMsgObj);
 
@@ -425,9 +509,12 @@ async function handleSendMessage(e) {
     messages: buildChatPayload(session),
     stream: true,
     // Ollama defaults to a small context window and silently truncates long chats
-    options: { num_ctx: 8192 }
+    options: { num_ctx: 8192, temperature: state.settings.temperature }
   };
   let accumulatedText = "";
+  let serverTps = 0;
+  const startedAt = performance.now();
+  let firstTokenAt = 0;
 
   try {
     const baseUrl = state.settings.baseUrl;
@@ -447,9 +534,17 @@ async function handleSendMessage(e) {
     }
 
     await readNdjson(response, (parsed) => {
-      accumulatedText += parsed.message?.content || "";
-      assistantBubble.innerHTML = formatMarkdown(accumulatedText) + `<span class="cursor-blink"></span>`;
-      el.messagesArea.scrollTop = el.messagesArea.scrollHeight;
+      const piece = parsed.message?.content || "";
+      if (piece) {
+        if (!firstTokenAt) firstTokenAt = performance.now();
+        accumulatedText += piece;
+        assistantBubble.innerHTML = formatMarkdown(accumulatedText) + `<span class="cursor-blink"></span>`;
+        el.messagesArea.scrollTop = el.messagesArea.scrollHeight;
+      }
+      // Ollama reports its own generation speed on the final streamed object
+      if (parsed.done && parsed.eval_count && parsed.eval_duration) {
+        serverTps = parsed.eval_count / (parsed.eval_duration / 1e9);
+      }
     });
 
     assistantMsgObj.content = accumulatedText;
@@ -460,14 +555,58 @@ async function handleSendMessage(e) {
     } else {
       assistantMsgObj.content = err.message;
       assistantMsgObj.error = true;
-      userMessage.error = true; // don't resend a prompt that never got an answer
+      if (precedingMessage?.role === "user") precedingMessage.error = true; // don't resend a prompt that never got an answer
     }
   } finally {
+    // Speed stats: Ollama's reported tok/s when available, else a rough estimate from elapsed time
+    if (!assistantMsgObj.error && accumulatedText && firstTokenAt) {
+      const seconds = (performance.now() - firstTokenAt) / 1000;
+      const estTokens = Math.max(1, Math.round(accumulatedText.length / 4));
+      const tps = serverTps || (seconds > 0 ? estTokens / seconds : 0);
+      assistantMsgObj.stats = { tps: Math.round(tps * 10) / 10, ttftMs: Math.round(firstTokenAt - startedAt) };
+    }
     setStreamingState(false);
-    // Re-render so the finished reply gets its model/time label and any error styling
+    // Re-render so the finished reply gets its model/time label, stats and any error styling
     renderMessages();
     await persistSessions();
   }
+}
+
+// Message actions: Copy (any message), Regenerate (assistant), Edit (user)
+function copyMessage(index, btn) {
+  const session = getCurrentSession();
+  const msg = session.messages[index];
+  navigator.clipboard.writeText(msg.content).then(() => {
+    const original = btn.textContent;
+    btn.textContent = "✅";
+    setTimeout(() => { btn.textContent = original; }, 1200);
+  });
+}
+
+async function regenerateMessage(index) {
+  if (state.isStreaming) return;
+  const session = getCurrentSession();
+  session.messages.splice(index); // drop this reply and anything after it
+  const prev = session.messages[session.messages.length - 1];
+  if (prev) delete prev.error; // retrying a failed reply: let its prompt back into context
+  renderMessages();
+  await generateReply(session);
+}
+
+async function editMessage(index) {
+  if (state.isStreaming) return;
+  const session = getCurrentSession();
+  const msg = session.messages[index];
+  const next = prompt("Edit your message:", msg.content);
+  if (next === null) return; // cancelled
+  const trimmed = next.trim();
+  if (!trimmed) return;
+  msg.content = trimmed;
+  delete msg.error;
+  session.messages.splice(index + 1); // drop the old reply and anything after
+  if (index === 0) session.title = titleFromPrompt(trimmed);
+  renderMessages();
+  await generateReply(session);
 }
 
 function setStreamingState(streaming) {
@@ -526,13 +665,14 @@ function renderMessages() {
     return;
   }
 
-  session.messages.forEach(msg => {
+  session.messages.forEach((msg, index) => {
     const msgDiv = document.createElement("div");
     msgDiv.className = `message ${msg.role}${msg.error ? " error" : ""}`;
+    msgDiv.dataset.index = index;
     const time = new Date(msg.timestamp || Date.now()).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
     let body, label;
     if (msg.role === "user") {
-      body = escapeHtml(msg.content);
+      body = (msg.page ? `<div class="message-page" title="${escapeHtml(msg.page.url)}">📄 ${escapeHtml(msg.page.title)}</div>` : "") + escapeHtml(msg.content);
       label = msg.error ? "Not sent" : "";
     } else if (msg.error) {
       body = `<strong>Couldn't get a reply.</strong> ${escapeHtml(msg.content)}`;
@@ -541,10 +681,16 @@ function renderMessages() {
       body = formatMarkdown(msg.content);
       label = msg.model || "";
     }
+    const stats = msg.stats ? `<span class="meta-stats">${msg.stats.tps} tok/s · ${msg.stats.ttftMs}ms to first token</span>` : "";
+    const actions = [`<button type="button" class="msg-action" data-action="copy" title="Copy">📋</button>`];
+    if (msg.role === "assistant") actions.push(`<button type="button" class="msg-action" data-action="regenerate" title="Regenerate">🔁</button>`);
+    if (msg.role === "user") actions.push(`<button type="button" class="msg-action" data-action="edit" title="Edit">✏️</button>`);
     msgDiv.innerHTML = `
       <div class="message-bubble">${body}</div>
       <div class="message-meta">
         ${label ? `<span>${escapeHtml(label)}</span>` : ""}
+        ${stats}
+        <span class="meta-actions">${actions.join("")}</span>
         <span>${time}</span>
       </div>
     `;
@@ -634,7 +780,7 @@ function updateContextStats() {
   // Count what the model will actually receive, not every bubble on screen
   const sent = buildChatPayload(session);
   const count = sent.filter(m => m.role !== "system").length;
-  const charCount = sent.reduce((acc, m) => acc + m.content.length, 0);
+  const charCount = sent.reduce((acc, m) => acc + m.content.length, 0) + (state.page ? state.page.text.length : 0);
   const approxTokens = Math.round(charCount / 4);
   el.tokenCounter.textContent = `~${approxTokens} tokens · ${count} msg${count === 1 ? "" : "s"} in context`;
   el.tokenCounter.title = "Messages and estimated tokens sent to the model with your next message (includes system prompt and memory facts)";
@@ -705,8 +851,16 @@ function setupEventListeners() {
   el.toggleSidebarBtn.addEventListener("click", () => el.sidebar.classList.toggle("hidden"));
   el.sessionSearch.addEventListener("input", renderSessionList);
   el.closeSidebarBtn.addEventListener("click", () => el.sidebar.classList.add("hidden"));
-  // Clicking the chat behind the open drawer closes it
-  el.messagesArea.addEventListener("click", () => el.sidebar.classList.add("hidden"));
+  // Clicking the chat behind the open drawer closes it; clicking a message action runs it
+  el.messagesArea.addEventListener("click", (e) => {
+    el.sidebar.classList.add("hidden");
+    const btn = e.target.closest(".msg-action");
+    if (!btn) return;
+    const index = Number(btn.closest(".message").dataset.index);
+    if (btn.dataset.action === "copy") copyMessage(index, btn);
+    else if (btn.dataset.action === "regenerate") regenerateMessage(index);
+    else if (btn.dataset.action === "edit") editMessage(index);
+  });
   el.clearAllHistoryBtn.addEventListener("click", () => {
     if (confirm("Delete all chat sessions?")) {
       state.sessions = [];
@@ -726,6 +880,14 @@ function setupEventListeners() {
   });
 
   el.chatForm.addEventListener("submit", handleSendMessage);
+  el.settingTemperature.addEventListener("input", () => {
+    el.temperatureValue.textContent = el.settingTemperature.value;
+  });
+  el.pageBtn.addEventListener("click", attachPage);
+  el.removePageBtn.addEventListener("click", () => {
+    state.page = null;
+    renderPageChip();
+  });
   el.stopBtn.addEventListener("click", stopStreaming);
 
   el.openSettingsBtn.addEventListener("click", () => {

@@ -4,6 +4,15 @@ All notable changes to LocalMind are documented here. The format follows [Keep a
 
 ## [Unreleased]
 
+### Added
+
+- **📄 Page** button: attach the active tab's text to the next message (cut to ~16,000 characters, with a bar showing how much is sent). Sending with an empty box summarizes the page.
+- Right-click **Ask LocalMind** on selected text: Explain, Translate to English, Fix grammar, Summarize.
+- New permissions: `scripting` (read the tab's text when asked) and `contextMenus` (right-click menu).
+- Message actions: **Copy** any message, **Regenerate** a reply (also retries a failed one), **Edit** your message and get a new reply.
+- Speed stats under each reply: tokens per second and time to first token.
+- **Temperature** slider in Settings (default 0.8), sent with every request.
+
 ## [1.0.0] - 2026-11-02
 
 First public release.
@@ -25,5 +34,5 @@ First public release.
 - Playwright end-to-end test with a mock Ollama server, and CI.
 - User guide, architecture docs with diagrams, contributing and security policies.
 
-[Unreleased]: https://github.com/rahul-aot/local-llm-sidepanel/compare/v1.0.0...HEAD
-[1.0.0]: https://github.com/rahul-aot/local-llm-sidepanel/releases/tag/v1.0.0
+[Unreleased]: https://github.com/zccott/local-llm-sidepanel/compare/v1.0.0...HEAD
+[1.0.0]: https://github.com/zccott/local-llm-sidepanel/releases/tag/v1.0.0

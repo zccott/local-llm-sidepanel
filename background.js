@@ -9,6 +9,18 @@ chrome.runtime.onInstalled.addListener(() => {
       console.warn("setPanelBehavior failed:", err);
     });
   }
+  // Right-click menu on selected text; ids match ASK_PROMPTS in sidepanel.js
+  chrome.contextMenus.create({ id: "ask", title: "Ask LocalMind", contexts: ["selection"] });
+  for (const [id, title] of [["explain", "Explain"], ["translate", "Translate to English"], ["fix", "Fix grammar"], ["summarize", "Summarize"]]) {
+    chrome.contextMenus.create({ id, parentId: "ask", title, contexts: ["selection"] });
+  }
+});
+
+// Hand the selection to the panel through session storage; the panel sends it once it is open.
+chrome.contextMenus.onClicked.addListener((info, tab) => {
+  // open() must run before any await to keep the user gesture
+  chrome.sidePanel.open({ windowId: tab.windowId }).catch((err) => console.warn("sidePanel.open failed:", err));
+  chrome.storage.session.set({ pendingAsk: { action: info.menuItemId, text: info.selectionText, windowId: tab.windowId } });
 });
 
 // Ollama returns 403 for unknown Origin headers, and Chrome sends chrome-extension://<id> on POST.

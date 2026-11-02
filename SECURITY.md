@@ -25,7 +25,8 @@ What LocalMind does, and the limits you should know about:
 | Area | Behaviour |
 |---|---|
 | Network | The panel only sends requests to the server address in Settings: `/api/tags`, `/api/chat`, `/api/pull` and `/api/delete`. No telemetry, analytics, CDNs or remote fonts. |
-| Host permissions | `http://*/*` and `https://*/*` are requested so that any server address works. They are not used to read or change web pages; the extension has no content scripts. |
+| Host permissions | `http://*/*` and `https://*/*` are requested so that any server address works, and so the panel can read a tab's text when you ask it to. The extension has no content scripts and never changes web pages. |
+| Reading pages | With the `scripting` permission, the panel reads the visible text of the active tab **only when you click 📄 Page**. The `contextMenus` permission adds **Ask LocalMind** on selected text, which passes only that selection. Page text and selections go to your own server, like any other message, and are saved with the chat in `chrome.storage.local`. |
 | Origin header | A `declarativeNetRequest` rule removes the `Origin` header **only** from requests this extension makes (`initiatorDomains` is the extension's own ID), so Ollama accepts them. It never affects other sites or extensions. |
 | Storage | Settings, About You and chats are stored unencrypted in `chrome.storage.local`. Anyone with access to your browser profile can read them. Don't put passwords or API keys in chats or About You. |
 | Rendering | Model replies are HTML-escaped before the small Markdown formatter runs, so a reply can't inject markup or scripts. |

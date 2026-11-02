@@ -83,9 +83,14 @@
         <!-- Input Bar -->
         <footer class="input-container">
           <form id="chatForm">
+            <div id="pageChip" class="page-chip hidden">
+              <span id="pageChipText"></span>
+              <button type="button" id="removePageBtn" title="Don't send this page">✕</button>
+            </div>
             <textarea id="promptInput" rows="1" placeholder="Ask your local LLM... (Shift+Enter for newline)" autofocus></textarea>
             <div class="form-actions">
               <span id="tokenCounter" class="token-counter">0 tokens</span>
+              <button type="button" id="pageBtn" class="page-btn" title="Send this tab's text with your next message (empty message = summarize)">📄 Page</button>
               <button type="submit" id="sendBtn" class="send-btn" title="Send message">
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
               </button>
@@ -115,6 +120,12 @@
           <label>
             <span>System Prompt / Assistant Persona</span>
             <textarea id="settingSystemPrompt" rows="3" placeholder="You are a helpful AI assistant."></textarea>
+          </label>
+
+          <label>
+            <span>Temperature: <output id="temperatureValue" for="settingTemperature">0.8</output></span>
+            <input type="range" id="settingTemperature" min="0" max="2" step="0.1" value="0.8">
+            <small>Lower is more focused and repeatable; higher is more varied and creative.</small>
           </label>
 
           <label>

@@ -552,8 +552,32 @@ select:focus {
   font-size: 10px;
   color: var(--text-muted);
   display: flex;
+  align-items: center;
+  flex-wrap: wrap;
   gap: 8px;
   padding: 0 4px;
+}
+.meta-stats {
+  font-variant-numeric: tabular-nums;
+}
+.meta-actions {
+  display: inline-flex;
+  gap: 2px;
+}
+.msg-action {
+  background: none;
+  border: none;
+  padding: 1px 2px;
+  font-size: 11px;
+  line-height: 1;
+  color: var(--text-muted);
+  opacity: 0.6;
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+}
+.msg-action:hover {
+  opacity: 1;
+  background: rgba(127, 127, 127, 0.18);
 }
 .cursor-blink {
   display: inline-block;
@@ -607,6 +631,60 @@ select:focus {
 .token-counter {
   font-size: 10px;
   color: var(--text-muted);
+  margin-right: auto;
+}
+.form-actions {
+  gap: 6px;
+}
+.page-btn {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+  font-size: 10.5px;
+  height: 26px;
+  padding: 0 8px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: border-color 0.15s ease, color 0.15s ease;
+}
+.page-btn:hover {
+  border-color: var(--accent);
+  color: var(--text-main);
+}
+.page-chip {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 10.5px;
+  color: var(--text-muted);
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 6px;
+  margin-bottom: 6px;
+}
+.page-chip.hidden {
+  display: none;
+}
+.page-chip span {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.page-chip button {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+.page-chip button:hover {
+  color: var(--text-main);
+}
+.message-page {
+  font-size: 10.5px;
+  opacity: 0.8;
+  margin-bottom: 4px;
+  overflow-wrap: anywhere;
 }
 .send-btn {
   background: var(--accent);
@@ -723,6 +801,14 @@ select:focus {
 }
 .modal-body input:focus, .modal-body textarea:focus {
   border-color: var(--accent);
+}
+.modal-body input[type="range"] {
+  width: 100%;
+  accent-color: var(--accent);
+}
+.modal-body label output {
+  color: var(--text-main);
+  font-weight: 700;
 }
 .modal-body small {
   font-size: 10px;

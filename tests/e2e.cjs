@@ -47,7 +47,9 @@ const check = (name, ok, detail = "") => { results.push({ name, ok, detail }); c
   page.on("request", r => { if (r.url().endsWith("/api/chat")) chatRequests.push(JSON.parse(r.postData())); });
   const chatResponses = [];
   page.on("response", r => { if (r.url().endsWith("/api/chat")) chatResponses.push(r.status()); });
-  const waitForReply = () => page.waitForFunction(() => !document.getElementById("stopBtn").offsetParent, null, { timeout: 180000 });
+  // The mock answers in under a second, so fail fast there; real models can take minutes
+  const limit = (ms) => mock ? Math.min(ms, 10000) : ms;
+  const waitForReply = () => page.waitForFunction(() => !document.getElementById("stopBtn").offsetParent, null, { timeout: limit(180000) });
 
   await page.goto(`chrome-extension://${id}/sidepanel.html`);
   await page.waitForFunction(() => document.getElementById("statusBadge").textContent !== "Connecting...", null, { timeout: 15000 });
@@ -114,6 +116,7 @@ const check = (name, ok, detail = "") => { results.push({ name, ok, detail }); c
   check("first request: system + 1 user, prompt not duplicated", p1.length === 2 && p1[1].role === "user", p1.map(m => m.role).join(","));
   check("memory fact mined", (await page.isVisible("#minedFactsBar")) && (await page.textContent("#factsPreview")).includes("Rahul"), await page.textContent("#factsPreview"));
   check("counter counts sent msgs", (await page.textContent("#tokenCounter")).includes("2 msgs"), await page.textContent("#tokenCounter"));
+  check("reply shows speed stats", /\d+(\.\d+)? tok\/s · \d+ms to first token/.test(label1), label1.trim().replace(/\s+/g, " "));
 
   // Chat round 2: history is sent once, in order
   await page.fill("#promptInput", "What is my name? One word.");
@@ -135,6 +138,47 @@ const check = (name, ok, detail = "") => { results.push({ name, ok, detail }); c
   check("stop ends streaming", !(await page.isVisible("#stopBtn")) && (await page.isVisible("#sendBtn")));
   const emptyBubbles = await page.$$eval(".message.assistant .message-bubble", bs => bs.filter(b => !b.textContent.trim()).length);
   check("no empty reply bubbles after stop", emptyBubbles === 0, `${emptyBubbles} empty`);
+
+  // Ask about this page: attach the active tab's text, trimmed to fit
+  await ctx.route("http://article.test/**", r => r.fulfill({ contentType: "text/html", body: `<title>Pharos facts</title><p>The Pharos of Alexandria was 100 metres tall.</p><p>${"filler ".repeat(4000)}</p>` }));
+  const article = await ctx.newPage();
+  await article.goto("http://article.test/");
+  await article.bringToFront();
+  await page.click("#pageBtn");
+  await page.waitForSelector("#pageChip:not(.hidden)", { timeout: 5000 }).catch(() => {});
+  const chip = await page.textContent("#pageChipText");
+  check("Page button attaches the active tab", chip.includes("Pharos facts"), chip);
+  check("long page is trimmed and says how much is sent", /first \d+%/.test(chip), chip);
+  await page.press("#promptInput", "Enter"); // empty prompt + page = summarize
+  await page.waitForTimeout(300);
+  await waitForReply();
+  const pPage = chatRequests[chatRequests.length - 1].messages.at(-1).content;
+  check("page text reaches the model with a summarize prompt", pPage.includes("Pharos of Alexandria") && pPage.endsWith("Summarize this page.") && pPage.length < 17000, `${pPage.length} chars`);
+  check("sent message shows the page title", (await page.textContent(".message.user:nth-last-child(2) .message-page")).includes("Pharos facts"));
+  check("page detaches after sending", !(await page.isVisible("#pageChip")));
+  await article.close();
+
+  // Right-click "Ask LocalMind": background.js queues the selection in session storage
+  const winId = await page.evaluate(async () => (await chrome.windows.getCurrent()).id);
+  await sw.evaluate((windowId) => chrome.storage.session.set({ pendingAsk: { action: "explain", text: "photosynthesis", windowId } }), winId);
+  await page.waitForTimeout(300);
+  await waitForReply();
+  const pAsk = chatRequests[chatRequests.length - 1].messages.at(-1).content;
+  check("right-click Ask sends the selection with its action", pAsk === "Explain this:\n\nphotosynthesis", JSON.stringify(pAsk));
+  check("right-click request is cleared after sending", !(await sw.evaluate(() => chrome.storage.session.get("pendingAsk"))).pendingAsk);
+
+  // Temperature slider: live display updates, and the value reaches the next request
+  await page.click("#openSettingsBtn");
+  await page.$eval("#settingTemperature", (elm) => { elm.value = "0.2"; elm.dispatchEvent(new Event("input", { bubbles: true })); });
+  check("temperature display updates live while dragging", (await page.textContent("#temperatureValue")) === "0.2");
+  await page.click("#saveSettingsBtn");
+  await page.waitForTimeout(200);
+  await page.fill("#promptInput", "Say OK.");
+  await page.press("#promptInput", "Enter");
+  await page.waitForTimeout(300);
+  await waitForReply();
+  const tempSent = chatRequests[chatRequests.length - 1].options?.temperature;
+  check("temperature setting reaches the model request", tempSent === 0.2, `options.temperature=${tempSent}`);
 
   // New chat: About You carries over, per-chat facts don't
   await page.click("#newChatBtn");
@@ -230,7 +274,7 @@ const check = (name, ok, detail = "") => { results.push({ name, ok, detail }); c
   check("Settings lists server models", models.every(m => listed.includes(m)), listed.join(", "));
   await page.fill("#pullModelInput", "no-such-model-xyz-123");
   await page.click("#pullModelBtn");
-  await page.waitForFunction(() => !document.getElementById("pullModelBtn").disabled, null, { timeout: 60000 });
+  await page.waitForFunction(() => !document.getElementById("pullModelBtn").disabled, null, { timeout: limit(60000) });
   check("bad model name shows an error", (await page.textContent("#pullStatus")).startsWith("Couldn't download"), await page.textContent("#pullStatus"));
 
   const TEST_MODEL = "all-minilm:latest";
@@ -243,7 +287,7 @@ const check = (name, ok, detail = "") => { results.push({ name, ok, detail }); c
     await page.click("#pullModelBtn");
     await page.waitForTimeout(50);
     check("download disables button while running", await page.isDisabled("#pullModelBtn"), await page.textContent("#pullStatus"));
-    await page.waitForFunction(() => !document.getElementById("pullModelBtn").disabled, null, { timeout: 300000 });
+    await page.waitForFunction(() => !document.getElementById("pullModelBtn").disabled, null, { timeout: limit(300000) });
     check("download finishes", (await page.textContent("#pullStatus")).startsWith("Downloaded"), await page.textContent("#pullStatus"));
     const after = await page.$$eval("#modelList li span", s => s.map(x => x.textContent));
     check("downloaded model appears in list", after.includes(TEST_MODEL), after.join(", "));
@@ -256,11 +300,49 @@ const check = (name, ok, detail = "") => { results.push({ name, ok, detail }); c
     check("cancelling remove keeps the model", (await page.$$eval("#modelList li span", s => s.map(x => x.textContent))).includes(TEST_MODEL));
     page.once("dialog", d => d.accept());
     await page.click(removeBtn);
-    await page.waitForFunction(m => ![...document.querySelectorAll("#modelList li span")].some(s => s.textContent === m), TEST_MODEL, { timeout: 30000 });
+    await page.waitForFunction(m => ![...document.querySelectorAll("#modelList li span")].some(s => s.textContent === m), TEST_MODEL, { timeout: limit(30000) });
     const final = await page.$$eval("#modelList li span", s => s.map(x => x.textContent));
     check("remove deletes it from server", !final.includes(TEST_MODEL) && models.every(m => final.includes(m)), final.join(", "));
   }
   await page.click('#settingsModal [data-close="settingsModal"] >> nth=0');
+
+  // Message actions: Copy, Edit, Regenerate (in a fresh chat so earlier session-count checks are unaffected)
+  // The page reloads above drop the earlier clipboard shim, so it's reapplied here.
+  await page.evaluate(() => { navigator.clipboard.writeText = async t => { window.__clip = t; }; });
+  await page.click("#newChatBtn");
+  await page.fill("#promptInput", "Say the word blue.");
+  await page.press("#promptInput", "Enter");
+  await page.waitForTimeout(300);
+  await waitForReply();
+  check("only user messages get an Edit button", (await page.$$(".message.user .msg-action[data-action='edit']")).length === 1 && (await page.$$(".message.assistant .msg-action[data-action='edit']")).length === 0);
+  check("only assistant messages get a Regenerate button", (await page.$$(".message.assistant .msg-action[data-action='regenerate']")).length === 1 && (await page.$$(".message.user .msg-action[data-action='regenerate']")).length === 0);
+
+  // Stored text, not the bubble's textContent: rendering turns newlines into <br>, which textContent drops
+  const assistantReplyText = await page.evaluate(() => getCurrentSession().messages.at(-1).content);
+  await page.click(".message.assistant:last-child .msg-action[data-action='copy']");
+  await page.waitForTimeout(100);
+  check("Copy puts the raw reply text on the clipboard", (await page.evaluate(() => window.__clip)) === assistantReplyText, assistantReplyText.slice(0, 60));
+  check("Copy button shows a checkmark after copying", (await page.textContent(".message.assistant:last-child .msg-action[data-action='copy']")) === "✅");
+
+  page.once("dialog", d => d.dismiss());
+  await page.click(".message.user .msg-action[data-action='edit']");
+  await page.waitForTimeout(200);
+  check("cancelling Edit leaves the message alone", (await page.$$(".message")).length === 2 && (await page.textContent(".message.user .message-bubble")) === "Say the word blue.");
+
+  page.once("dialog", d => d.accept("Say the word green."));
+  await page.click(".message.user .msg-action[data-action='edit']");
+  await page.waitForTimeout(300);
+  await waitForReply();
+  check("Edit replaces the message and regenerates the reply", (await page.$$(".message")).length === 2 && (await page.textContent(".message.user .message-bubble")) === "Say the word green.");
+  check("Edit resends with the new wording", chatRequests.at(-1).messages.at(-1).content === "Say the word green.");
+  const beforeRegenerate = await page.$eval(".message.assistant:last-child .message-bubble", e => e.textContent.trim());
+
+  await page.click(".message.assistant:last-child .msg-action[data-action='regenerate']");
+  await page.waitForTimeout(300);
+  await waitForReply();
+  check("Regenerate replaces the reply, not adds another", (await page.$$(".message")).length === 2);
+  check("Regenerate resends the same preceding message", chatRequests.at(-1).messages.at(-1).content === "Say the word green.");
+  check("Regenerate gets a fresh reply with fresh stats", (await page.textContent(".message.assistant:last-child .message-meta")).match(/\d+(\.\d+)? tok\/s/), beforeRegenerate.slice(0, 20));
 
   await page.screenshot({ path: path.join(OUT, "final.png") });
   check("no console errors", consoleErrors.length === 0, consoleErrors.join(" | ").slice(0, 300));

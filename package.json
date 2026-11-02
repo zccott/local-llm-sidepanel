@@ -6,7 +6,7 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/rahul-aot/local-llm-sidepanel.git"
+    "url": "https://github.com/zccott/local-llm-sidepanel.git"
   },
   "engines": {
     "node": ">=20"

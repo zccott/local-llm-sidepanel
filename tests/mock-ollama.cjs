@@ -29,9 +29,12 @@ function startMockOllama(port = 0) {
       } else {
         // Echo everything the model was given, so tests can check what context reached it
         const reply = `PONG. I received: ${messages.map(m => m.content).join(" | ")}`;
-        for (const piece of reply.match(/.{1,7}/gs)) { send({ model, message: { role: "assistant", content: piece } }); await sleep(20); }
+        // ~20 pieces whatever the length, so echoing an attached page doesn't take a minute
+        const size = Math.max(7, Math.ceil(reply.length / 20));
+        for (const piece of reply.match(new RegExp(`.{1,${size}}`, "gs"))) { send({ model, message: { role: "assistant", content: piece } }); await sleep(20); }
       }
-      send({ model, done: true });
+      // Fake but plausible generation timings, so the client's speed-stats code has real fields to read
+      send({ model, done: true, eval_count: 42, eval_duration: 400_000_000 });
       return res.end();
     }
 

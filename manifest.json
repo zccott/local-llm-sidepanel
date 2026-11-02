@@ -3,11 +3,13 @@
   "name": "LocalMind - Local LLM Side Panel",
   "version": "1.0.0",
   "description": "Chat with Ollama models on your computer or local network from Chrome's side panel. Private: nothing goes to the cloud.",
-  "homepage_url": "https://github.com/rahul-aot/local-llm-sidepanel",
+  "homepage_url": "https://github.com/zccott/local-llm-sidepanel",
   "permissions": [
     "sidePanel",
     "storage",
-    "declarativeNetRequestWithHostAccess"
+    "declarativeNetRequestWithHostAccess",
+    "scripting",
+    "contextMenus"
   ],
   "host_permissions": [
     "http://*/*",

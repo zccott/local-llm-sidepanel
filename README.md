@@ -2,7 +2,7 @@
 
 Chat with [Ollama](https://ollama.com) models from Chrome's side panel. The model runs on your computer or on another machine on your network, and your chats never leave it.
 
-[![CI](https://github.com/rahul-aot/local-llm-sidepanel/actions/workflows/ci.yml/badge.svg)](https://github.com/rahul-aot/local-llm-sidepanel/actions/workflows/ci.yml)
+[![CI](https://github.com/zccott/local-llm-sidepanel/actions/workflows/ci.yml/badge.svg)](https://github.com/zccott/local-llm-sidepanel/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-2f5f4b.svg)](LICENSE)
 
 <img src="docs/images/screenshot.png" alt="LocalMind side panel in light theme: a two-message chat with gpt-oss, a session memory bar, and the token counter" width="380">
@@ -26,7 +26,7 @@ You need Chrome 114 or newer (Edge and Brave work too) and an Ollama server with
 1. **Build the extension**
 
    ```sh
-   git clone https://github.com/rahul-aot/local-llm-sidepanel.git
+   git clone https://github.com/zccott/local-llm-sidepanel.git
    cd local-llm-sidepanel
    ./build.sh
    ```

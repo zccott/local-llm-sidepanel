@@ -1,0 +1,96 @@
+name: Release
+
+# Push a tag like v1.0.1 (matching "version" in manifest.json) to build, test and publish a GitHub Release
+# with the extension zip attached. Run it manually from the Actions tab to rebuild an existing tag's release.
+on:
+  push:
+    tags: ["v*.*.*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing tag to (re)publish, e.g. v1.0.0
+        required: true
+
+concurrency:
+  group: release-${{ github.event.inputs.tag || github.ref_name }}
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build, test and publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      TAG: ${{ github.event.inputs.tag || github.ref_name }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+
+      - name: Check tag matches manifest and package versions
+        run: |
+          manifest=$(node -p 'require("./manifest.json").version')
+          pkg=$(node -p 'require("./package.json").version')
+          if [ "v$manifest" != "$TAG" ] || [ "v$pkg" != "$TAG" ]; then
+            echo "::error::Tag $TAG doesn't match manifest.json ($manifest) and package.json ($pkg). Bump both, commit, then tag."
+            exit 1
+          fi
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - run: npm ci
+      # Playwright is pinned in package-lock.json, so its Chromium build only changes with the lockfile
+      - uses: actions/cache@v4
+        id: playwright-cache
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+      - run: npx playwright install --with-deps chromium
+        if: steps.playwright-cache.outputs.cache-hit != 'true'
+      - run: npx playwright install-deps chromium
+        if: steps.playwright-cache.outputs.cache-hit == 'true'
+      - run: npm test # also builds dist/localmind.zip
+
+      - name: Name the zip after the version
+        run: mv dist/localmind.zip "dist/localmind-$TAG.zip"
+
+      - name: Release notes from CHANGELOG.md
+        run: |
+          # Section between "## [x.y.z]" and the next "## [" heading
+          awk -v v="${TAG#v}" '
+            $0 ~ "^## \\[" v "\\]" { found = 1; next }
+            found && /^## \[/ { exit }
+            found { print }
+          ' CHANGELOG.md > notes.md
+          if [ ! -s notes.md ]; then echo "See CHANGELOG.md." > notes.md; fi
+          cat >> notes.md <<'EOF'
+
+          ### Install
+
+          1. Download `localmind-*.zip` below and unzip it.
+          2. Open `chrome://extensions`, turn on **Developer mode**, click **Load unpacked** and select the unzipped folder.
+          3. Keep that folder in place: Chrome loads the extension (and your chats) from it.
+          EOF
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" "dist/localmind-$TAG.zip" --clobber
+            gh release edit "$TAG" --notes-file notes.md
+          else
+            gh release create "$TAG" "dist/localmind-$TAG.zip" --title "LocalMind $TAG" --notes-file notes.md --verify-tag
+          fi
+
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: test-results
+          path: test-results
+          retention-days: 7

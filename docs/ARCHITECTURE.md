@@ -40,8 +40,8 @@ flowchart LR
 
 | File | Responsibility |
 |---|---|
-| `manifest.json` | Permissions (`sidePanel`, `storage`, `declarativeNetRequestWithHostAccess`), host access (`http://*/*`, `https://*/*`) so any server address works, side panel and icon registration. |
-| `background.js` | Side panel open-on-click behaviour; the dynamic rule that removes `Origin` (see [below](#why-the-origin-header-is-removed)). |
+| `manifest.json` | Permissions (`sidePanel`, `storage`, `declarativeNetRequestWithHostAccess`, `scripting` for reading the active tab's text, `contextMenus` for the right-click menu), host access (`http://*/*`, `https://*/*`) so any server address works, side panel and icon registration. |
+| `background.js` | Side panel open-on-click behaviour; the **Ask LocalMind** right-click menu, which opens the panel and queues the selection in `chrome.storage.session` (`pendingAsk`) for the panel to send; the dynamic rule that removes `Origin` (see [below](#why-the-origin-header-is-removed)). |
 | `sidepanel.html` | Markup: header, model bar, history drawer with search, messages, input, Settings and Context Inspector dialogs. |
 | `sidepanel.css` | Design tokens on `:root` (light) and `:root[data-theme="dark"]`, then component styles. All colours come from tokens. |
 | `sidepanel.js` | State, storage, Ollama client, NDJSON reader, prompt builder, memory miner, rendering, model manager, theme, export. |
@@ -89,7 +89,7 @@ flowchart TD
   MF["Memory facts<br/>(this chat only)"] --> SYS
   SYS["system message"] --> OUT
 
-  H["Chat history"] --> F1{"last N messages<br/>(Max History, default 20)"}
+  H["Chat history<br/>(attached page text is prepended<br/>to its user message)"] --> F1{"last N messages<br/>(Max History, default 20)"}
   F1 --> F2{"skip empty replies<br/>and failed messages"}
   F2 --> OUT["messages[] sent to /api/chat"]
 ```
@@ -149,6 +149,7 @@ erDiagram
     string timestamp "ISO date"
     string model "assistant only"
     bool error "excluded from context"
+    object page "attached tab: title, url, text (max 16000 chars), total"
   }
 ```
 
