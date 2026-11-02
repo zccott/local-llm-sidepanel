@@ -88,7 +88,7 @@ jobs:
             gh release create "$TAG" "dist/localmind-$TAG.zip" --title "LocalMind $TAG" --notes-file notes.md --verify-tag
           fi
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: failure()
         with:
           name: test-results
