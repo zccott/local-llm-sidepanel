@@ -53,7 +53,7 @@ You install the extension from a **folder**. You don't upload anything to the Ch
 
 ### Ask about a web page
 
-- Click **📄 Page** to attach the text of the tab you're viewing to your next message. A bar above the input box shows the page title and how much of it will be sent. Long pages are cut to about 16,000 characters (roughly 4,000 tokens) so they fit the model's context.
+- Click **📄 Page** to attach the text of the tab you're viewing to your next message. A bar above the input box shows the page title and how much of it will be sent. Pages up to about 16,000 characters are sent whole. Longer pages work at any length: for a question, LocalMind sends only the parts whose words match it, and to summarize, it summarizes each part first and then combines them (this takes one model call per part). Use the page's own wording in questions for the best matches.
 - Type a question and send, or send with the box empty to get a summary. Click **✕** on the bar to drop the page.
 - The page stays part of that chat, so you can ask follow-up questions about it.
 - Chrome's own pages (`chrome://`), the Chrome Web Store and PDFs can't be read.

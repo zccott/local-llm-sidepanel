@@ -20,7 +20,11 @@ function startMockOllama(port = 0) {
     }
 
     if (req.method === "POST" && req.url === "/api/chat") {
-      const { model, messages } = await readBody(req);
+      const { model, messages, stream } = await readBody(req);
+      if (stream === false) { // per-part page summaries
+        res.writeHead(200, { "Content-Type": "application/json" });
+        return res.end(JSON.stringify({ model, done: true, message: { role: "assistant", content: `- summary of ${messages.at(-1).content.length} chars` } }));
+      }
       const send = ndjson(res);
       const last = messages[messages.length - 1].content;
       // Long prompts stream slowly so the test can press Stop mid-reply

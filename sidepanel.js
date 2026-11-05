@@ -23,7 +23,9 @@ const DEFAULT_SETTINGS = {
 };
 
 // ~4k tokens: half of the 8192 num_ctx, leaving room for history and the reply
-const PAGE_CHAR_LIMIT = 16000;
+const PAGE_CHAR_LIMIT = 16000; // pages up to this size are sent whole
+const CHUNK_CHARS = 1000; // longer pages are split into parts this size
+const RETRIEVE_CHARS = 12000; // how much of a long page goes with each question
 
 // Right-click menu actions from background.js
 const ASK_PROMPTS = {
@@ -127,7 +129,7 @@ async function attachPage() {
     const [{ result }] = await chrome.scripting.executeScript({ target: { tabId: tab.id }, func: () => document.body?.innerText || "" });
     const text = result.replace(/\n{3,}/g, "\n\n").trim();
     if (!text) throw new Error("The page has no text.");
-    state.page = { title: tab.title || tab.url, url: tab.url, text: text.slice(0, PAGE_CHAR_LIMIT), total: text.length };
+    state.page = { title: tab.title || tab.url, url: tab.url, text, total: text.length };
   } catch (err) {
     alert(`Couldn't read this tab. Chrome pages, the Web Store and PDFs can't be read.\n\n${err.message}`);
   }
@@ -138,9 +140,9 @@ function renderPageChip() {
   const p = state.page;
   el.pageChip.classList.toggle("hidden", !p);
   if (p) {
-    const size = p.text.length < p.total
-      ? `first ${Math.round(p.text.length / p.total * 100)}% (${p.text.length.toLocaleString()} of ${p.total.toLocaleString()} chars)`
-      : `${p.total.toLocaleString()} chars`;
+    const size = p.status || (p.total > PAGE_CHAR_LIMIT
+      ? `${p.total.toLocaleString()} chars · long page: sends the parts that match your question`
+      : `${p.total.toLocaleString()} chars`);
     el.pageChipText.textContent = `📄 ${p.title} · ${size}`;
     el.pageChipText.title = p.url;
   }
@@ -150,7 +152,74 @@ function renderPageChip() {
 // What the model sees for a user message that has a page attached
 function withPage(m) {
   if (!m.page) return m.content;
-  return `[Web page: ${m.page.title} (${m.page.url})]\n${m.page.text}\n[End of web page]\n\n${m.content}`;
+  const label = { parts: "most relevant parts", summary: "summaries of each part" }[m.page.mode];
+  return `[Web page: ${m.page.title} (${m.page.url})${label ? `, ${label}` : ""}]\n${m.page.text}\n[End of web page]\n\n${m.content}`;
+}
+
+// Long pages: split into ~1,000-character parts, then send only what the question needs.
+// Keyword matching runs in the browser, so no embedding model is needed.
+function chunkText(text) {
+  const chunks = [];
+  let cur = "";
+  for (const para of text.split(/\n+/)) {
+    for (let p = para; p; p = p.slice(CHUNK_CHARS)) {
+      const piece = p.slice(0, CHUNK_CHARS);
+      if (cur && cur.length + piece.length > CHUNK_CHARS) { chunks.push(cur); cur = ""; }
+      cur += (cur ? "\n" : "") + piece;
+    }
+  }
+  if (cur) chunks.push(cur);
+  return chunks;
+}
+
+// Scores each part by the question's words, weighting rare words higher (TF-IDF)
+function keywordScores(chunks, question) {
+  const terms = [...new Set(question.toLowerCase().match(/[\p{L}\p{N}]{3,}/gu) || [])];
+  const lower = chunks.map(c => c.toLowerCase());
+  const idf = Object.fromEntries(terms.map(w => [w, Math.log(1 + chunks.length / (1 + lower.filter(t => t.includes(w)).length))]));
+  return lower.map(t => terms.reduce((s, w) => s + (t.split(w).length - 1) * idf[w], 0));
+}
+
+function relevantParts(page, question) {
+  const chunks = chunkText(page.text);
+  const scores = keywordScores(chunks, question);
+  const picked = [];
+  let used = 0;
+  for (const i of chunks.map((_, i) => i).sort((a, b) => scores[b] - scores[a] || a - b)) {
+    if (used + chunks[i].length > RETRIEVE_CHARS) break;
+    picked.push(i);
+    used += chunks[i].length;
+  }
+  // Page order reads better than score order
+  return picked.sort((a, b) => a - b).map(i => chunks[i]).join("\n…\n");
+}
+
+// One non-streamed reply, used for the per-part summaries
+async function chatOnce(model, content, signal) {
+  const res = await fetch(`${state.settings.baseUrl}/api/chat`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ model, stream: false, messages: [{ role: "user", content }], options: { num_ctx: 8192, temperature: 0.2 } }),
+    signal
+  });
+  if (!res.ok) throw new Error(`HTTP ${res.status} ${await res.text()}`);
+  return (await res.json()).message?.content || "";
+}
+
+// Summarize each ~16k-character group of parts, so the final answer covers the whole page
+async function summarizeParts(page, model, signal) {
+  const groups = [""];
+  for (const c of chunkText(page.text)) {
+    if (groups.at(-1) && groups.at(-1).length + c.length > PAGE_CHAR_LIMIT) groups.push("");
+    groups[groups.length - 1] += c + "\n";
+  }
+  const notes = [];
+  for (let i = 0; i < groups.length; i++) {
+    page.status = `summarizing part ${i + 1} of ${groups.length}…`;
+    renderPageChip();
+    notes.push(`Part ${i + 1}:\n${await chatOnce(model, `Summarize this part of a web page in a few bullet points:\n\n${groups[i]}`, signal)}`);
+  }
+  return notes.join("\n\n");
 }
 
 // Load Settings
@@ -442,7 +511,29 @@ async function handleSendMessage(e) {
   const session = getCurrentSession();
   const userMessage = { role: "user", content: prompt, timestamp: new Date().toISOString() };
   if (state.page) {
-    userMessage.page = state.page; // stays in history, so follow-up questions still see it
+    const p = state.page;
+    // Stays in history, so follow-up questions still see it; only the needed part of a long page is kept
+    userMessage.page = { title: p.title, url: p.url, text: p.text, total: p.total };
+    if (p.total > PAGE_CHAR_LIMIT) {
+      if (/summar/i.test(prompt)) {
+        setStreamingState(true);
+        state.abortController = new AbortController();
+        try {
+          userMessage.page.text = await summarizeParts(p, el.modelSelect.value || state.selectedModel, state.abortController.signal);
+        } catch (err) {
+          if (err.name !== "AbortError") alert(`Couldn't summarize the page: ${err.message}`);
+          return; // page and prompt stay, so the user can retry
+        } finally {
+          delete p.status;
+          setStreamingState(false);
+          renderPageChip();
+        }
+        userMessage.page.mode = "summary";
+      } else {
+        userMessage.page.text = relevantParts(p, prompt);
+        userMessage.page.mode = "parts";
+      }
+    }
     state.page = null;
     renderPageChip();
   }
@@ -755,7 +846,7 @@ function updateContextStats() {
   // Count what the model will actually receive, not every bubble on screen
   const sent = buildChatPayload(session);
   const count = sent.filter(m => m.role !== "system").length;
-  const charCount = sent.reduce((acc, m) => acc + m.content.length, 0) + (state.page ? state.page.text.length : 0);
+  const charCount = sent.reduce((acc, m) => acc + m.content.length, 0) + (state.page ? Math.min(state.page.text.length, PAGE_CHAR_LIMIT) : 0);
   const approxTokens = Math.round(charCount / 4);
   el.tokenCounter.textContent = `~${approxTokens} tokens · ${count} msg${count === 1 ? "" : "s"} in context`;
   el.tokenCounter.title = "Messages and estimated tokens sent to the model with your next message (includes system prompt and memory facts)";

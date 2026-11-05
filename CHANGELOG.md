@@ -6,7 +6,7 @@ All notable changes to LocalMind are documented here. The format follows [Keep a
 
 ### Added
 
-- **📄 Page** button: attach the active tab's text to the next message (cut to ~16,000 characters, with a bar showing how much is sent). Sending with an empty box summarizes the page.
+- **📄 Page** button: attach the active tab's text to the next message. Pages up to ~16,000 characters are sent whole. Longer pages have no size limit: each question sends only the parts that match it (keyword search in the browser, no extra model), and summarizing one summarizes every part first. Sending with an empty box summarizes the page.
 - Right-click **Ask LocalMind** on selected text: Explain, Translate to English, Fix grammar, Summarize.
 - New permissions: `scripting` (read the tab's text when asked) and `contextMenus` (right-click menu).
 - Message actions: **Copy** any message, **Regenerate** a reply (also retries a failed one), **Edit** your message and get a new reply.

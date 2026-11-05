@@ -139,23 +139,32 @@ const check = (name, ok, detail = "") => { results.push({ name, ok, detail }); c
   const emptyBubbles = await page.$$eval(".message.assistant .message-bubble", bs => bs.filter(b => !b.textContent.trim()).length);
   check("no empty reply bubbles after stop", emptyBubbles === 0, `${emptyBubbles} empty`);
 
-  // Ask about this page: attach the active tab's text, trimmed to fit
-  await ctx.route("http://article.test/**", r => r.fulfill({ contentType: "text/html", body: `<title>Pharos facts</title><p>The Pharos of Alexandria was 100 metres tall.</p><p>${"filler ".repeat(4000)}</p>` }));
+  // Ask about this page: a ~42k-char page, with the one useful fact buried in the middle
+  await ctx.route("http://article.test/**", r => r.fulfill({ contentType: "text/html", body: `<title>Pharos facts</title><p>${"filler ".repeat(3000)}</p><p>The Pharos of Alexandria was 100 metres tall.</p><p>${"filler ".repeat(3000)}</p>` }));
   const article = await ctx.newPage();
   await article.goto("http://article.test/");
-  await article.bringToFront();
-  await page.click("#pageBtn");
-  await page.waitForSelector("#pageChip:not(.hidden)", { timeout: 5000 }).catch(() => {});
+  const attach = async () => { await article.bringToFront(); await page.click("#pageBtn"); await page.waitForSelector("#pageChip:not(.hidden)", { timeout: 5000 }).catch(() => {}); };
+  await attach();
   const chip = await page.textContent("#pageChipText");
   check("Page button attaches the active tab", chip.includes("Pharos facts"), chip);
-  check("long page is trimmed and says how much is sent", /first \d+%/.test(chip), chip);
-  await page.press("#promptInput", "Enter"); // empty prompt + page = summarize
+  check("long page says only matching parts are sent", chip.includes("long page"), chip);
+  await page.fill("#promptInput", "How tall was the Pharos?");
+  await page.press("#promptInput", "Enter");
   await page.waitForTimeout(300);
   await waitForReply();
-  const pPage = chatRequests[chatRequests.length - 1].messages.at(-1).content;
-  check("page text reaches the model with a summarize prompt", pPage.includes("Pharos of Alexandria") && pPage.endsWith("Summarize this page.") && pPage.length < 17000, `${pPage.length} chars`);
+  const pPage = chatRequests.at(-1).messages.at(-1).content;
+  check("question about a long page sends the matching part from the middle", pPage.includes("100 metres tall") && pPage.includes("most relevant parts") && pPage.length < 13500, `${pPage.length} chars`);
   check("sent message shows the page title", (await page.textContent(".message.user:nth-last-child(2) .message-page")).includes("Pharos facts"));
   check("page detaches after sending", !(await page.isVisible("#pageChip")));
+
+  const before = chatRequests.length;
+  await attach();
+  await page.press("#promptInput", "Enter"); // empty prompt + page = summarize
+  await waitForReply();
+  const partCalls = chatRequests.slice(before).filter(r => r.stream === false).length;
+  const pSum = chatRequests.at(-1).messages.at(-1).content;
+  check("summarizing a long page summarizes every part first", partCalls === 3, `${partCalls} part summaries`);
+  check("final summary request gets the part notes, not the raw page", pSum.includes("Part 3:") && pSum.includes("summaries of each part") && pSum.endsWith("Summarize this page.") && !pSum.includes("filler filler"), `${pSum.length} chars`);
   await article.close();
 
   // Right-click "Ask LocalMind": background.js queues the selection in session storage
@@ -267,43 +276,21 @@ const check = (name, ok, detail = "") => { results.push({ name, ok, detail }); c
   await page.waitForTimeout(1500);
   check("Theme choice persists after reload", (await theme()) === "dark");
 
-  // Model manager
+  // Model list: saved names, added and removed in Settings (nothing is downloaded or deleted on the server)
   await page.click("#openSettingsBtn");
   await page.waitForTimeout(300);
   const listed = await page.$$eval("#modelList li span", s => s.map(x => x.textContent));
-  check("Settings lists server models", models.every(m => listed.includes(m)), listed.join(", "));
-  await page.fill("#pullModelInput", "no-such-model-xyz-123");
+  check("Settings lists the saved models", listed.includes("gpt-oss-8k:latest") && listed.includes("gpt-oss:20b"), listed.join(", "));
+  const dropdown = () => page.$$eval("#modelSelect option", os => os.map(o => o.value));
+  const dd = await dropdown();
+  check("dropdown has saved and server models", dd.includes("gpt-oss:20b") && models.every(m => dd.includes(m)), dd.join(", "));
+  await page.fill("#pullModelInput", "my-model:1b");
   await page.click("#pullModelBtn");
-  await page.waitForFunction(() => !document.getElementById("pullModelBtn").disabled, null, { timeout: limit(60000) });
-  check("bad model name shows an error", (await page.textContent("#pullStatus")).startsWith("Couldn't download"), await page.textContent("#pullStatus"));
-
-  const TEST_MODEL = "all-minilm:latest";
-  if (!runPull) {
-    console.log("SKIP  download/remove (real server: set E2E_PULL=1 to run it)");
-  } else if (listed.includes(TEST_MODEL)) {
-    console.log(`SKIP  download/remove: ${TEST_MODEL} already on server, not touching it`);
-  } else {
-    await page.fill("#pullModelInput", TEST_MODEL);
-    await page.click("#pullModelBtn");
-    await page.waitForTimeout(50);
-    check("download disables button while running", await page.isDisabled("#pullModelBtn"), await page.textContent("#pullStatus"));
-    await page.waitForFunction(() => !document.getElementById("pullModelBtn").disabled, null, { timeout: limit(300000) });
-    check("download finishes", (await page.textContent("#pullStatus")).startsWith("Downloaded"), await page.textContent("#pullStatus"));
-    const after = await page.$$eval("#modelList li span", s => s.map(x => x.textContent));
-    check("downloaded model appears in list", after.includes(TEST_MODEL), after.join(", "));
-    check("downloaded model appears in dropdown", (await page.$$eval("#modelSelect option", os => os.map(o => o.value))).includes(TEST_MODEL));
-
-    const removeBtn = `#modelList li:has(span:text-is("${TEST_MODEL}")) button`;
-    page.once("dialog", d => d.dismiss());
-    await page.click(removeBtn);
-    await page.waitForTimeout(500);
-    check("cancelling remove keeps the model", (await page.$$eval("#modelList li span", s => s.map(x => x.textContent))).includes(TEST_MODEL));
-    page.once("dialog", d => d.accept());
-    await page.click(removeBtn);
-    await page.waitForFunction(m => ![...document.querySelectorAll("#modelList li span")].some(s => s.textContent === m), TEST_MODEL, { timeout: limit(30000) });
-    const final = await page.$$eval("#modelList li span", s => s.map(x => x.textContent));
-    check("remove deletes it from server", !final.includes(TEST_MODEL) && models.every(m => final.includes(m)), final.join(", "));
-  }
+  await page.waitForTimeout(500);
+  check("Add puts the name in the list and dropdown", (await page.$$eval("#modelList li span", s => s.map(x => x.textContent))).includes("my-model:1b") && (await dropdown()).includes("my-model:1b"));
+  await page.click('#modelList li:has(span:text-is("my-model:1b")) button');
+  await page.waitForTimeout(500);
+  check("× removes the name from the list", !(await page.$$eval("#modelList li span", s => s.map(x => x.textContent))).includes("my-model:1b"));
   await page.click('#settingsModal [data-close="settingsModal"] >> nth=0');
 
   // Message actions: Copy, Edit, Regenerate (in a fresh chat so earlier session-count checks are unaffected)
